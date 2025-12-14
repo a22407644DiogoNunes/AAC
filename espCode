@@ -1,0 +1,131 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <Servo.h>
+
+// -------- CONFIG --------
+const char* WIFI_SSID = "NOS-E386";
+const char* WIFI_PASS = "EK397RUY";
+
+const char* SERVER_URL =
+"https://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";
+
+#define TRIG_PIN 2    // D4
+#define ECHO_PIN 14   // D5
+#define SERVO_PIN 12  // D6
+
+#define DIST_THRESHOLD_CM 15.0
+#define INTERVAL_MS 200
+#define BUFFER_LEN 40
+#define NUM_READINGS 5
+
+Servo servo;
+String buffer = "";
+
+int servoAngle = 90;
+int sweepDir = 1;
+const int sweepMin = 60;
+const int sweepMax = 120;
+
+// ---------- HC-SR04 ----------
+float measureDistanceCM() {
+  float total = 0;
+  int valid = 0;
+
+  for (int i = 0; i < NUM_READINGS; i++) {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+
+    long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30 ms max
+    if (duration > 0) {
+      float distance = (duration * 0.0343) / 2.0;
+      if (distance >= 2 && distance <= 400) { // Filtra valores inválidos
+        total += distance;
+        valid++;
+      }
+    }
+    delay(10); // Pequeno delay entre leituras
+  }
+
+  if (valid == 0) return -1;
+  return total / valid; // Retorna média das leituras válidas
+}
+
+// ---------- HTTP ----------
+void sendHTTP(const String& payload) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.begin(client, SERVER_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  String body = "{\"pattern\":\"" + payload + "\"}";
+  int code = http.POST(body);
+
+  Serial.print("HTTP code: ");
+  Serial.println(code);
+  Serial.println("Enviado: " + payload);
+
+  http.end();
+}
+
+// ---------- SETUP ----------
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  servo.attach(SERVO_PIN);
+  servo.write(servoAngle);
+
+  Serial.print("Ligando ao WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi ligado!");
+  Serial.println(WiFi.localIP());
+}
+
+// ---------- LOOP ----------
+void loop() {
+  unsigned long start = millis();
+
+  // Sweep do servo
+  servoAngle += sweepDir * 2;
+  if (servoAngle >= sweepMax) { servoAngle = sweepMax; sweepDir = -1; }
+  if (servoAngle <= sweepMin) { servoAngle = sweepMin; sweepDir = 1; }
+  servo.write(servoAngle);
+
+  // Delay para o servo estabilizar
+  delay(50);
+
+  float dist = measureDistanceCM();
+  bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
+
+  buffer += detected ? "X" : ".";
+
+  if (buffer.length() >= BUFFER_LEN && buffer.length() > 0) {
+    sendHTTP(buffer);
+    buffer = "";
+  }
+
+  if (dist > 0) {
+    Serial.print("Distância média: ");
+    Serial.print(dist);
+    Serial.println(" cm");
+  }
+
+  unsigned long elapsed = millis() - start;
+  if (elapsed < INTERVAL_MS) delay(INTERVAL_MS - elapsed);
+}
