@@ -2,47 +2,47 @@
 #include <ESP8266HTTPClient.h>
 #include <Servo.h>
 
-// -------- CONFIG --------
-const char* WIFI_SSID = "freeulusofona";
-const char* WIFI_PASS = "";
+// -------- WIFI --------
+const char* WIFI_SSID = "NOS-E386";
+const char* WIFI_PASS = "EK397RUY";
 
+// -------- SERVER --------
 const char* SERVER_URL =
 "https://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";
 
-// Pinos
+// -------- PINOS --------
 #define TRIG_PIN 2      // D4
 #define ECHO_PIN 14     // D5
-#define SERVO_H_PIN 12  // D6 → horizontal
-#define SERVO_V_PIN 0   // D3 → vertical ⚠️
+#define SERVO_H_PIN 12  // D6
+#define SERVO_V_PIN 0   // D3 ⚠️ cuidado boot
 
-// Parâmetros
-#define DIST_THRESHOLD_CM 15.0
-#define INTERVAL_MS 200
-#define BUFFER_LEN 40
-#define NUM_READINGS 5
-#define ROWS 5 
-#define H_STEP 2       // passo horizontal
-#define H_MIN 60
-#define H_MAX 120
+// -------- RADAR --------
+#define ROWS 5
+#define COLS 41
 
-// Vertical
-const int vStart = 0;   
-const int vStep  = 10;    
+#define H_MIN 30
+#define H_MAX 150
+#define H_STEP 3
 
-// ------------------------
-String rowsBuffer[ROWS];
+#define DIST_THRESHOLD_CM 30.0
+#define NUM_READINGS 3
 
+const int vStart = 40;
+const int vStep  = 10;
+
+// -----------------------
 Servo servoH;
 Servo servoV;
 
-String buffer = "";
-int currentRow = 0;
+char radar[ROWS][COLS];
 
-// Horizontal
-int hAngle = 90;
-int hDir = 1;
+// -------- FUNÇÕES --------
+void clearRadar() {
+  for (int r = 0; r < ROWS; r++)
+    for (int c = 0; c < COLS; c++)
+      radar[r][c] = '.';
+}
 
-// ---------- HC-SR04 ----------
 float measureDistanceCM() {
   float total = 0;
   int valid = 0;
@@ -62,15 +62,14 @@ float measureDistanceCM() {
         valid++;
       }
     }
-    delay(10);
+    delay(5);
   }
 
   if (valid == 0) return -1;
   return total / valid;
 }
 
-// ---------- HTTP ----------
-void sendHTTP(const String& payload) {
+void sendHTTP(String payload) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   WiFiClientSecure client;
@@ -81,18 +80,14 @@ void sendHTTP(const String& payload) {
   http.addHeader("Content-Type", "application/json");
 
   String body = "{\"pattern\":\"" + payload + "\"}";
-
-  int code = http.POST(body);
-  Serial.print("HTTP code: ");
-  Serial.println(code);
+  http.POST(body);
 
   http.end();
 }
 
-// ---------- SETUP ----------
+// -------- SETUP --------
 void setup() {
   Serial.begin(115200);
-  delay(2000);
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -100,77 +95,55 @@ void setup() {
   servoH.attach(SERVO_H_PIN);
   servoV.attach(SERVO_V_PIN);
 
-  // inicializa servos
-  servoH.write(hAngle);
-  servoV.write(vStart); 
+  servoH.write(H_MIN);
+  servoV.write(vStart);
 
-  Serial.print("Ligando ao WiFi");
+  clearRadar();
+
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("\nWiFi ligado!");
-  Serial.println(WiFi.localIP());
+  while (WiFi.status() != WL_CONNECTED) delay(500);
 }
 
-// ---------- LOOP ----------
+// -------- LOOP --------
 void loop() {
-  unsigned long start = millis();
 
-  // Movimento horizontal
-  hAngle += hDir * H_STEP;
+  clearRadar();
 
-  if (hAngle >= H_MAX) {
-    hAngle = H_MAX;
-    hDir = -1;
-  }
+  for (int row = 0; row < ROWS; row++) {
 
-  if (hAngle <= H_MIN) {
-    hAngle = H_MIN;
-    hDir = 1;
-
-    // 🔥 FIM DO SWEEP → salva linha
-    if (buffer.length() > 0) {
-      rowsBuffer[currentRow] = buffer;
-      buffer = "";
-    }
-
-    // Próxima linha vertical
-    currentRow++;
-
-    if (currentRow >= ROWS) {
-      // 🔥 Já fez as 5 varreduras → envia tudo
-      String fullPattern = "";
-
-      for (int i = 0; i < ROWS; i++) {
-        fullPattern += rowsBuffer[i];
-        if (i < ROWS - 1) fullPattern += "\\n";
-      }
-
-      sendHTTP(fullPattern);
-
-      // Reset
-      for (int i = 0; i < ROWS; i++) rowsBuffer[i] = "";
-      currentRow = 0;
-    }
-
-    // Atualiza servo vertical
-    int vAngle = vStart + currentRow * vStep;
+    int vAngle = vStart + row * vStep;
     servoV.write(vAngle);
-    delay(100);
+    delay(150);
+
+    for (int hAngle = H_MIN; hAngle <= H_MAX; hAngle += H_STEP) {
+
+      servoH.write(hAngle);
+      delay(40);
+
+      float dist = measureDistanceCM();
+      bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
+
+      int col = map(hAngle, H_MIN, H_MAX, 0, COLS - 1);
+      col = constrain(col, 0, COLS - 1);
+
+      radar[row][col] = detected ? 'X' : '.';
+    }
+
+    servoH.write(H_MIN);
+    delay(120);
   }
 
-  servoH.write(hAngle);
-  delay(40);
+  // ----- Constrói payload -----
+  String payload = "";
 
-  float dist = measureDistanceCM();
-  bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
+  for (int r = 0; r < ROWS; r++) {
+    for (int c = 0; c < COLS; c++) {
+      payload += radar[r][c];
+    }
+    if (r < ROWS - 1) payload += "\\n";
+  }
 
-  buffer += detected ? "X" : ".";
+  sendHTTP(payload);
 
-  unsigned long elapsed = millis() - start;
-  if (elapsed < INTERVAL_MS) delay(INTERVAL_MS - elapsed);
+  delay(600);
 }
