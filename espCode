@@ -3,28 +3,44 @@
 #include <Servo.h>
 
 // -------- CONFIG --------
-const char* WIFI_SSID = "NOS-E386";
-const char* WIFI_PASS = "EK397RUY";
+const char* WIFI_SSID = "freeulusofona";
+const char* WIFI_PASS = "";
 
 const char* SERVER_URL =
 "https://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";
 
-#define TRIG_PIN 2    // D4
-#define ECHO_PIN 14   // D5
-#define SERVO_PIN 12  // D6
+// Pinos
+#define TRIG_PIN 2      // D4
+#define ECHO_PIN 14     // D5
+#define SERVO_H_PIN 12  // D6 → horizontal
+#define SERVO_V_PIN 0   // D3 → vertical ⚠️
 
+// Parâmetros
 #define DIST_THRESHOLD_CM 15.0
 #define INTERVAL_MS 200
 #define BUFFER_LEN 40
 #define NUM_READINGS 5
+#define ROWS 5 
+#define H_STEP 2       // passo horizontal
+#define H_MIN 60
+#define H_MAX 120
 
-Servo servo;
+// Vertical
+const int vStart = 0;   
+const int vStep  = 10;    
+
+// ------------------------
+String rowsBuffer[ROWS];
+
+Servo servoH;
+Servo servoV;
+
 String buffer = "";
+int currentRow = 0;
 
-int servoAngle = 90;
-int sweepDir = 1;
-const int sweepMin = 60;
-const int sweepMax = 120;
+// Horizontal
+int hAngle = 90;
+int hDir = 1;
 
 // ---------- HC-SR04 ----------
 float measureDistanceCM() {
@@ -38,19 +54,19 @@ float measureDistanceCM() {
     delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
 
-    long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30 ms max
+    long duration = pulseIn(ECHO_PIN, HIGH, 30000);
     if (duration > 0) {
-      float distance = (duration * 0.0343) / 2.0;
-      if (distance >= 2 && distance <= 400) { // Filtra valores inválidos
-        total += distance;
+      float d = (duration * 0.0343) / 2.0;
+      if (d >= 2 && d <= 400) {
+        total += d;
         valid++;
       }
     }
-    delay(10); // Pequeno delay entre leituras
+    delay(10);
   }
 
   if (valid == 0) return -1;
-  return total / valid; // Retorna média das leituras válidas
+  return total / valid;
 }
 
 // ---------- HTTP ----------
@@ -65,11 +81,10 @@ void sendHTTP(const String& payload) {
   http.addHeader("Content-Type", "application/json");
 
   String body = "{\"pattern\":\"" + payload + "\"}";
-  int code = http.POST(body);
 
+  int code = http.POST(body);
   Serial.print("HTTP code: ");
   Serial.println(code);
-  Serial.println("Enviado: " + payload);
 
   http.end();
 }
@@ -82,8 +97,12 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-  servo.attach(SERVO_PIN);
-  servo.write(servoAngle);
+  servoH.attach(SERVO_H_PIN);
+  servoV.attach(SERVO_V_PIN);
+
+  // inicializa servos
+  servoH.write(hAngle);
+  servoV.write(vStart); 
 
   Serial.print("Ligando ao WiFi");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -101,30 +120,56 @@ void setup() {
 void loop() {
   unsigned long start = millis();
 
-  // Sweep do servo
-  servoAngle += sweepDir * 2;
-  if (servoAngle >= sweepMax) { servoAngle = sweepMax; sweepDir = -1; }
-  if (servoAngle <= sweepMin) { servoAngle = sweepMin; sweepDir = 1; }
-  servo.write(servoAngle);
+  // Movimento horizontal
+  hAngle += hDir * H_STEP;
 
-  // Delay para o servo estabilizar
-  delay(50);
+  if (hAngle >= H_MAX) {
+    hAngle = H_MAX;
+    hDir = -1;
+  }
+
+  if (hAngle <= H_MIN) {
+    hAngle = H_MIN;
+    hDir = 1;
+
+    // 🔥 FIM DO SWEEP → salva linha
+    if (buffer.length() > 0) {
+      rowsBuffer[currentRow] = buffer;
+      buffer = "";
+    }
+
+    // Próxima linha vertical
+    currentRow++;
+
+    if (currentRow >= ROWS) {
+      // 🔥 Já fez as 5 varreduras → envia tudo
+      String fullPattern = "";
+
+      for (int i = 0; i < ROWS; i++) {
+        fullPattern += rowsBuffer[i];
+        if (i < ROWS - 1) fullPattern += "\\n";
+      }
+
+      sendHTTP(fullPattern);
+
+      // Reset
+      for (int i = 0; i < ROWS; i++) rowsBuffer[i] = "";
+      currentRow = 0;
+    }
+
+    // Atualiza servo vertical
+    int vAngle = vStart + currentRow * vStep;
+    servoV.write(vAngle);
+    delay(100);
+  }
+
+  servoH.write(hAngle);
+  delay(40);
 
   float dist = measureDistanceCM();
   bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
 
   buffer += detected ? "X" : ".";
-
-  if (buffer.length() >= BUFFER_LEN && buffer.length() > 0) {
-    sendHTTP(buffer);
-    buffer = "";
-  }
-
-  if (dist > 0) {
-    Serial.print("Distância média: ");
-    Serial.print(dist);
-    Serial.println(" cm");
-  }
 
   unsigned long elapsed = millis() - start;
   if (elapsed < INTERVAL_MS) delay(INTERVAL_MS - elapsed);

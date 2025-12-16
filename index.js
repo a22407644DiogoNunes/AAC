@@ -1,10 +1,13 @@
 const express = require("express");
 const app = express();
 
-// Guarda o último padrão enviado pelo ESP
-let ultimoPadrao = "Aguardando dados do ESP8266...";
+// Configuração do visor
+const ROWS = 5;
+const COLS = 41;
 
-// Middleware para JSON
+// Inicializa radar vazio
+let radar = Array(ROWS).fill(".".repeat(COLS));
+
 app.use(express.json());
 
 // Página principal
@@ -17,37 +20,57 @@ app.get("/", (req, res) => {
 <title>Radar ESP8266</title>
 <meta http-equiv="refresh" content="1">
 <style>
-body { font-family: Arial; padding: 20px; background:#111; color:#0f0; }
-.box {
+body {
+    font-family: monospace;
+    padding: 20px;
+    background: #111;
+    color: #0f0;
+}
+pre {
     border: 2px solid #0f0;
     padding: 15px;
-    font-size: 22px;
-    background:#000;
-    letter-spacing: 2px;
+    font-size: 16px;
 }
 </style>
 </head>
 <body>
-<h1>📡 Radar ESP8266</h1>
-<p>Padrão recebido:</p>
-<div class="box">${ultimoPadrao}</div>
+
+<h1>📡 Radar ESP8266 (2D)</h1>
+
+<pre>
+${radar.reverse.join("\n")}
+</pre>
+
 </body>
 </html>
 `);
 });
 
-// Endpoint POST
+// Endpoint POST (recebe AS 5 LINHAS)
 app.post("/receive", (req, res) => {
-    if (!req.body || !req.body.pattern) {
-        return res.status(400).send("JSON inválido");
+    const { pattern } = req.body;
+
+    if (!pattern || typeof pattern !== "string") {
+        return res.status(400).send("Dados inválidos");
     }
 
-    ultimoPadrao = req.body.pattern;
-    console.log("Recebido:", ultimoPadrao);
+    const lines = pattern.split("\n");
+
+    if (lines.length !== ROWS) {
+        return res.status(400).send("Número de linhas inválido");
+    }
+
+    for (let i = 0; i < ROWS; i++) {
+        radar[i] = lines[i]
+            .padEnd(COLS, ".")
+            .substring(0, COLS);
+    }
+
+    console.log("Radar atualizado (5 varreduras)");
     res.send("OK");
 });
 
-// Servidor (IMPORTANTE: 0.0.0.0)
+// Servidor
 app.listen(5000, "0.0.0.0", () => {
-    console.log("Servidor ativo na porta 5000");
+    console.log("Servidor radar ativo na porta 5000");
 });
