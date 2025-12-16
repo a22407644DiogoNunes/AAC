@@ -1,5 +1,6 @@
 const express = require("express");
 const app = express();
+//node index.js
 
 // Configuração do visor
 const ROWS = 5;
@@ -38,7 +39,7 @@ pre {
 <h1>📡 Radar ESP8266 (2D)</h1>
 
 <pre>
-${radar.reverse.join("\n")}
+${[...radar].reverse().join("\n")}
 </pre>
 
 </body>
