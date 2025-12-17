@@ -7,14 +7,13 @@ const char* WIFI_SSID = "NOS-E386";
 const char* WIFI_PASS = "EK397RUY";
 
 // -------- SERVER --------
-const char* SERVER_URL =
-"https://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";
+const char* SERVER_URL = "http://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";  // Sem S!
 
 // -------- PINOS --------
 #define TRIG_PIN 2      // D4
 #define ECHO_PIN 14     // D5
-#define SERVO_H_PIN 12  // D6
-#define SERVO_V_PIN 0   // D3 ⚠️ cuidado boot
+#define SERVO_H_PIN 12  // D6 (horizontal)
+#define SERVO_V_PIN 13  // D7 (vertical) ← MUDADO de D3 para evitar problemas de boot
 
 // -------- RADAR --------
 #define ROWS 5
@@ -25,10 +24,9 @@ const char* SERVER_URL =
 #define H_STEP 3
 
 #define DIST_THRESHOLD_CM 30.0
-#define NUM_READINGS 3
+#define NUM_READINGS 3   // Média de 3 leituras
 
-const int vStart = 40;
-const int vStep  = 10;
+const int vAngles[ROWS] = {0, 10, 20, 30, 40};  // Ângulos verticais fixos (mais claro)
 
 // -----------------------
 Servo servoH;
@@ -38,9 +36,7 @@ char radar[ROWS][COLS];
 
 // -------- FUNÇÕES --------
 void clearRadar() {
-  for (int r = 0; r < ROWS; r++)
-    for (int c = 0; c < COLS; c++)
-      radar[r][c] = '.';
+  memset(radar, '.', sizeof(radar));
 }
 
 float measureDistanceCM() {
@@ -54,33 +50,38 @@ float measureDistanceCM() {
     delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
 
-    long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+    unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000);  // Timeout 30ms (~5m)
     if (duration > 0) {
-      float d = (duration * 0.0343) / 2.0;
-      if (d >= 2 && d <= 400) {
-        total += d;
+      float dist = duration * 0.0343 / 2.0;
+      if (dist >= 2 && dist <= 400) {
+        total += dist;
         valid++;
       }
     }
-    delay(5);
+    delay(10);  // Pequeno descanso entre leituras
   }
 
   if (valid == 0) return -1;
   return total / valid;
 }
 
-void sendHTTP(String payload) {
+void sendHTTP(const String& payload) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
+  WiFiClient client;          // ← Cliente normal (não secure)
   HTTPClient http;
+
   http.begin(client, SERVER_URL);
   http.addHeader("Content-Type", "application/json");
 
   String body = "{\"pattern\":\"" + payload + "\"}";
-  http.POST(body);
+  int code = http.POST(body);
+
+  if (code > 0) {
+    Serial.printf("HTTP POST enviado, código: %d\n", code);
+  } else {
+    Serial.printf("HTTP POST falhou: %s\n", http.errorToString(code).c_str());
+  }
 
   http.end();
 }
@@ -96,29 +97,30 @@ void setup() {
   servoV.attach(SERVO_V_PIN);
 
   servoH.write(H_MIN);
-  servoV.write(vStart);
+  servoV.write(vAngles[0]);
 
   clearRadar();
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.print("A conectar ao WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi conectado! IP: " + WiFi.localIP().toString());
 }
 
 // -------- LOOP --------
 void loop() {
-
   clearRadar();
 
   for (int row = 0; row < ROWS; row++) {
-
-    int vAngle = vStart + row * vStep;
-    servoV.write(vAngle);
-    delay(150);
+    servoV.write(vAngles[row]);
+    delay(300);  // Tempo para servo vertical estabilizar
 
     for (int hAngle = H_MIN; hAngle <= H_MAX; hAngle += H_STEP) {
-
       servoH.write(hAngle);
-      delay(40);
+      delay(50);  // Tempo suficiente para movimento + medição
 
       float dist = measureDistanceCM();
       bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
@@ -129,21 +131,21 @@ void loop() {
       radar[row][col] = detected ? 'X' : '.';
     }
 
+    // Volta ao início para próxima linha
     servoH.write(H_MIN);
-    delay(120);
+    delay(200);
   }
 
   // ----- Constrói payload -----
   String payload = "";
-
   for (int r = 0; r < ROWS; r++) {
     for (int c = 0; c < COLS; c++) {
       payload += radar[r][c];
     }
-    if (r < ROWS - 1) payload += "\\n";
+    if (r < ROWS - 1) payload += "\n";  // ← \n real
   }
 
   sendHTTP(payload);
 
-  delay(600);
+  delay(500);  // Pausa entre scans completos
 }
