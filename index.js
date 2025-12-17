@@ -1,59 +1,77 @@
-//node index.js
-
 const express = require("express");
 const app = express();
+//node index.js
 
+// Configuração do visor
 const ROWS = 5;
 const COLS = 41;
 
-let radar = Array.from({ length: ROWS }, () => ".".repeat(COLS).split(""));
+// Inicializa radar vazio
+let radar = Array(ROWS).fill(".".repeat(COLS));
 
 app.use(express.json());
 
+// Página principal
 app.get("/", (req, res) => {
-  const display = radar.slice().reverse().map(row => row.join("")).join("\n");
-  res.send(`
+    res.send(`
 <!DOCTYPE html>
 <html lang="pt">
 <head>
 <meta charset="UTF-8">
 <title>Radar ESP8266</title>
-<meta http-equiv="refresh" content="2">
+<meta http-equiv="refresh" content="1">
 <style>
-body { background: #111; color: #0f0; font-family: monospace; padding: 20px; }
-pre { border: 2px solid #0f0; padding: 20px; font-size: 18px; background:#000; }
+body {
+    font-family: monospace;
+    padding: 20px;
+    background: #111;
+    color: #0f0;
+}
+pre {
+    border: 2px solid #0f0;
+    padding: 15px;
+    font-size: 16px;
+}
 </style>
 </head>
 <body>
+
 <h1>📡 Radar ESP8266 (2D)</h1>
-<pre>${display}</pre>
-<p>Última atualização: ${new Date().toLocaleTimeString()}</p>
+
+<pre>
+${[...radar].reverse().join("\n")}
+</pre>
+
 </body>
 </html>
 `);
 });
 
+// Endpoint POST (recebe AS 5 LINHAS)
 app.post("/receive", (req, res) => {
-  const { pattern } = req.body;
-  if (!pattern || typeof pattern !== "string") {
-    return res.status(400).send("Bad Request");
-  }
+    const { pattern } = req.body;
 
-  const lines = pattern.trim().split("\n");
-  if (lines.length !== ROWS) {
-    return res.status(400).send("Linhas inválidas");
-  }
-
-  for (let i = 0; i < ROWS; i++) {
-    if (lines[i].length >= COLS) {
-      radar[i] = lines[i].substring(0, COLS).split("");
-    } else {
-      radar[i] = lines[i].padEnd(COLS, ".").split("");
+    if (!pattern || typeof pattern !== "string") {
+        return res.status(400).send("Dados inválidos");
     }
-  }
 
-  console.log("Radar atualizado");
-  res.send("OK");
+    const lines = pattern.split("\n");
+
+    if (lines.length !== ROWS) {
+        return res.status(400).send("Número de linhas inválido");
+    }
+
+    for (let i = 0; i < ROWS; i++) {
+        radar[i] = lines[i]
+            .padEnd(COLS, ".")
+            .substring(0, COLS);
+    }
+
+    console.log("Radar atualizado (5 varreduras)");
+    res.send("OK");
 });
 
-app.listen(5000, "0.0.0.0", () => console.log("Servidor na porta 5000"));
+// Servidor
+app.listen(5000, "0.0.0.0", () => {
+    console.log("Servidor radar ativo na porta 5000");
+});

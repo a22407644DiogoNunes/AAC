@@ -2,43 +2,47 @@
 #include <ESP8266HTTPClient.h>
 #include <Servo.h>
 
-// -------- WIFI --------
+// -------- CONFIG --------
 const char* WIFI_SSID = "NOS-E386";
 const char* WIFI_PASS = "EK397RUY";
 
-// -------- SERVER --------
-const char* SERVER_URL = "http://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";  // Sem S!
+const char* SERVER_URL =
+"https://refactored-space-enigma-pj9gj4xq6xvjcq4q-5000.app.github.dev/receive";
 
-// -------- PINOS --------
+// Pinos
 #define TRIG_PIN 2      // D4
 #define ECHO_PIN 14     // D5
-#define SERVO_H_PIN 12  // D6 (horizontal)
-#define SERVO_V_PIN 13  // D7 (vertical) ← MUDADO de D3 para evitar problemas de boot
+#define SERVO_H_PIN 12  // D6 → horizontal
+#define SERVO_V_PIN 0   // D3 → vertical ⚠️
 
-// -------- RADAR --------
-#define ROWS 5
-#define COLS 41
-
+// Parâmetros
+#define DIST_THRESHOLD_CM 30.0
+#define INTERVAL_MS 200
+#define BUFFER_LEN 40
+#define NUM_READINGS 5
+#define ROWS 5 
+#define H_STEP 10       // passo horizontal
 #define H_MIN 30
 #define H_MAX 150
-#define H_STEP 3
 
-#define DIST_THRESHOLD_CM 30.0
-#define NUM_READINGS 3   // Média de 3 leituras
+// Vertical
+const int vStart = 0;   
+const int vStep  = 10;    
 
-const int vAngles[ROWS] = {0, 10, 20, 30, 40};  // Ângulos verticais fixos (mais claro)
+// ------------------------
+String rowsBuffer[ROWS];
 
-// -----------------------
 Servo servoH;
 Servo servoV;
 
-char radar[ROWS][COLS];
+String buffer = "";
+int currentRow = 0;
 
-// -------- FUNÇÕES --------
-void clearRadar() {
-  memset(radar, '.', sizeof(radar));
-}
+// Horizontal
+int hAngle = 90;
+int hDir = 1;
 
+// ---------- HC-SR04 ----------
 float measureDistanceCM() {
   float total = 0;
   int valid = 0;
@@ -50,45 +54,45 @@ float measureDistanceCM() {
     delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
 
-    unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000);  // Timeout 30ms (~5m)
+    long duration = pulseIn(ECHO_PIN, HIGH, 30000);
     if (duration > 0) {
-      float dist = duration * 0.0343 / 2.0;
-      if (dist >= 2 && dist <= 400) {
-        total += dist;
+      float d = (duration * 0.0343) / 2.0;
+      if (d >= 2 && d <= 400) {
+        total += d;
         valid++;
       }
     }
-    delay(10);  // Pequeno descanso entre leituras
+    delay(10);
   }
 
   if (valid == 0) return -1;
   return total / valid;
 }
 
+// ---------- HTTP ----------
 void sendHTTP(const String& payload) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  WiFiClient client;          // ← Cliente normal (não secure)
-  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
 
+  HTTPClient http;
   http.begin(client, SERVER_URL);
   http.addHeader("Content-Type", "application/json");
 
   String body = "{\"pattern\":\"" + payload + "\"}";
-  int code = http.POST(body);
 
-  if (code > 0) {
-    Serial.printf("HTTP POST enviado, código: %d\n", code);
-  } else {
-    Serial.printf("HTTP POST falhou: %s\n", http.errorToString(code).c_str());
-  }
+  int code = http.POST(body);
+  Serial.print("HTTP code: ");
+  Serial.println(code);
 
   http.end();
 }
 
-// -------- SETUP --------
+// ---------- SETUP ----------
 void setup() {
   Serial.begin(115200);
+  delay(2000);
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -96,56 +100,77 @@ void setup() {
   servoH.attach(SERVO_H_PIN);
   servoV.attach(SERVO_V_PIN);
 
-  servoH.write(H_MIN);
-  servoV.write(vAngles[0]);
+  // inicializa servos
+  servoH.write(hAngle);
+  servoV.write(vStart); 
 
-  clearRadar();
-
+  Serial.print("Ligando ao WiFi");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("A conectar ao WiFi");
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi conectado! IP: " + WiFi.localIP().toString());
+
+  Serial.println("\nWiFi ligado!");
+  Serial.println(WiFi.localIP());
 }
 
-// -------- LOOP --------
+// ---------- LOOP ----------
 void loop() {
-  clearRadar();
+  unsigned long start = millis();
 
-  for (int row = 0; row < ROWS; row++) {
-    servoV.write(vAngles[row]);
-    delay(300);  // Tempo para servo vertical estabilizar
+  // Movimento horizontal
+  hAngle += hDir * H_STEP;
 
-    for (int hAngle = H_MIN; hAngle <= H_MAX; hAngle += H_STEP) {
-      servoH.write(hAngle);
-      delay(50);  // Tempo suficiente para movimento + medição
-
-      float dist = measureDistanceCM();
-      bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
-
-      int col = map(hAngle, H_MIN, H_MAX, 0, COLS - 1);
-      col = constrain(col, 0, COLS - 1);
-
-      radar[row][col] = detected ? 'X' : '.';
-    }
-
-    // Volta ao início para próxima linha
-    servoH.write(H_MIN);
-    delay(200);
+  if (hAngle >= H_MAX) {
+    hAngle = H_MIN;
+    hDir = -1;
   }
 
-  // ----- Constrói payload -----
-  String payload = "";
-  for (int r = 0; r < ROWS; r++) {
-    for (int c = 0; c < COLS; c++) {
-      payload += radar[r][c];
+  if (hAngle <= H_MIN) {
+    hAngle = H_MIN;
+    hDir = 1;
+
+    // 🔥 FIM DO SWEEP → salva linha
+    if (buffer.length() > 0) {
+      rowsBuffer[currentRow] = buffer;
+      buffer = "";
     }
-    if (r < ROWS - 1) payload += "\n";  // ← \n real
+
+    // Próxima linha vertical
+    currentRow++;
+
+    if (currentRow >= ROWS) {
+      // 🔥 Já fez as 5 varreduras → envia tudo
+      String fullPattern = "";
+
+      for (int i = 0; i < ROWS; i++) {
+        fullPattern += rowsBuffer[i];
+        if (i < ROWS - 1) fullPattern += "\\n";
+      }
+
+      sendHTTP(fullPattern);
+
+      // Reset
+      for (int i = 0; i < ROWS; i++) rowsBuffer[i] = "";
+      currentRow = 0;
+    }
+
+    // Atualiza servo vertical
+    int vAngle = vStart + currentRow * vStep;
+    servoV.write(vAngle);
+    delay(100);
   }
 
-  sendHTTP(payload);
+  servoH.write(hAngle);
+  delay(40);
 
-  delay(500);  // Pausa entre scans completos
+  float dist = measureDistanceCM();
+  bool detected = (dist > 0 && dist <= DIST_THRESHOLD_CM);
+
+  buffer += detected ? "X" : ".";
+
+  unsigned long elapsed = millis() - start;
+  if (elapsed < INTERVAL_MS) delay(INTERVAL_MS - elapsed);
 }
